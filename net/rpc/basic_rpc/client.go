@@ -1,26 +1,19 @@
 package main
 
 import (
-	"net/rpc/jsonrpc"
-	"log"
 	"fmt"
+	"net/rpc"
 	"os"
+	"GoLibApp/net/common"
 )
 
-type Args struct {
-	A, B int
-}
-type Quotient struct {
-	Quo, Rem int
-}
-
 func main() {
-	client, err := jsonrpc.Dial("tcp", "127.0.0.1:1234")
+	client, err := rpc.Dial("tcp", ":1234")
 	if err != nil {
-		log.Fatal("dialing:", err)
+		fmt.Printf(err.Error())
 	}
 
-	args := &Args{1,2}
+	args := &common.Args{1, 2}
 	var reply int
 	err = client.Call("Arith.Multiply", args, &reply)
 	if err != nil {
@@ -29,12 +22,15 @@ func main() {
 	}
 	fmt.Println("the arith.mutiply is :", reply)
 
-
-	var quto Quotient
+	var quto common.Quotient
 	err = client.Call("Arith.Divide", args, &quto)
 	if err != nil {
 		fmt.Println("Arith.Divide call error:", err)
 		os.Exit(1)
 	}
 	fmt.Println("the arith.devide is :", quto.Quo, quto.Rem)
+
+	divCall := client.Go("Arith.Multiply", args, &reply, nil)
+	replyCall := <-divCall.Done
+	fmt.Printf("%s,----------,%s", divCall, replyCall)
 }

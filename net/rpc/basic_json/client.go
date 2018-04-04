@@ -1,26 +1,20 @@
 package main
 
 import (
+	"net/rpc/jsonrpc"
+	"log"
 	"fmt"
 	"os"
-	"jd.com/jstack-common/log"
-	"net/rpc"
+	"GoLibApp/net/common"
 )
 
-type Args struct {
-	A, B int
-}
-type Quotient struct {
-	Quo, Rem int
-}
-
 func main() {
-	client, err := rpc.DialHTTP("tcp", "127.0.0.1:1234")
+	client, err := jsonrpc.Dial("tcp", "127.0.0.1:1234")
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
 
-	args := &Args{1,2}
+	args := &common.Args{1, 2}
 	var reply int
 	err = client.Call("Arith.Multiply", args, &reply)
 	if err != nil {
@@ -29,8 +23,7 @@ func main() {
 	}
 	fmt.Println("the arith.mutiply is :", reply)
 
-
-	var quto Quotient
+	var quto common.Quotient
 	err = client.Call("Arith.Divide", args, &quto)
 	if err != nil {
 		fmt.Println("Arith.Divide call error:", err)
