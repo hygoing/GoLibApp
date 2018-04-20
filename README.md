@@ -1,2 +1,2 @@
 # GoLibApp
-Use go standard library for common functions
+Use go standard library for common functions    
