@@ -70,6 +70,10 @@ Vlan/Vxlan
     当hostA与hostE进行通信，p1 -> p5 -> p6 -> p7
     汇聚链接端口，用于处于相同vlan且未连接在同一台交换机的host通信
 
+- Vlan交换机内部流程
+
+
+
 - Vlan间路由
 
 
