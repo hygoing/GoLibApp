@@ -1,0 +1,159 @@
+Load Balancer
+
+- Load Balancer Data Model
+
+    lb instance -> listener1 -> backend1 -> target group1 -> ip (through ip register, allow different vpc ip, but not have same ip)
+    	        -> listener2 -> backend2 -> target group2 -> id (through vm id register)
+    	        -> listener3 -> urlMap -> url1 -> backend3 -> target group3 ip/id
+    						           -> url2 -> backend4 -> target group4 ip/id
+
+-- Import
+
+    listener have some listen rules to listen lb instance, the rule set up listen lb instance certain port and forward data package to backend
+    or urlmap, backend through backend rule forward the package to target in target group
+
+- Network Load Balancer Model
+
+                                         +----------------------+
+                                         |  +-----------------+ |
+                                         |  | +------------+  | |                              +------------------------+
+                                         |  | |     nlb    |  | |                              |                        |
+                                         |  | +------------+  | |                              |  +-------------------+ |
+                                 |---->  |  | +------------+  | | ------------|--------------> |  |         vm        | |
+                                 |       |  | |     nlb    |  | |             |                |  +-------------------+ |
+                                 |       |  | +------------+  | |             |--------------> |                        |
+                                 |       |  +-----------------+ |             |                +------------------------+
+                                 |       |          vm          |             |
+    +--------+       +----+      |       +----------------------+             |
+    | client | ----> | vr | -----|                                            |
+    +--------+       +----+      |                                            |
+                                 |       +----------------------+             |
+                                 |       |  +-----------------+ |             |
+                                 |       |  | +------------+  | |             |                 +------------------------+
+                                 |       |  | |     nlb    |  | |             |-------------->  |                        |
+                                 |       |  | +------------+  | |             |                 |  +------------------+  |
+                                 |---->  |  | +------------+  | | ------------|-------------->  |  |       vm         |  |
+                                         |  | |     nlb    |  | |                               |  +------------------+  |
+                                         |  | +------------+  | |                               |                        |
+                                         |  +-----------------+ |                               +------------------------+
+                                         |          vm          |
+                                         +----------------------+
+
+-- Import
+
+     > : src dst ; --> : forward ; -> : nat ;
+
+-- Dr Model(src ip penetrate)
+
+--- Data Package Transfer Request
+
+    +----------------------------------------------------------------------------------------+
+    |internet client:| cip > nlb vip(float ip) && cmac > vmac                                |
+    +----------------|-----------------------------------------------------------------------+
+    |vr :            | nlb vip(float ip) -nat-> nlb vip(fixed ip)                            |
+    |                | vmac -nat-> nlb local mac                                             |
+    |                | cmac -nat-> subnet gateway mac                                        |
+    |                | cip > nlb vip(fixed ip) && subnet gateway mac > nlb local mac         |
+    +----------------|-----------------------------------------------------------------------+
+    |nlb :           | subnet gatewat mac -nat-> nlb local mac                               |
+    |                | nlb local mac -nat-> real server mac                                  |
+    |                | cip > nlb vip(fixed ip) && nlb local mac > real server mac            |
+    +----------------|-----------------------------------------------------------------------+
+    |real server :   | nlb vip(fixed ip) -nat-> real server ip                               |
+    |                | send protocol stack                                                   |
+    +----------------------------------------------------------------------------------------+
+--- Data Package Transfer Replay
+
+    real server : real server ip > cip && real server mac > subnet gateway mac
+    vr :
+
+-- FullNat Model
+
+--- Data Package Transfer
+
+- Internal Network Load Balancer Model
+
+                                         +----------------------+
+                                         |  +-----------------+ |
+                                         |  | +------------+  | |                              +------------------------+
+                                         |  | |     nlb    |  | |                              |                        |
+                                         |  | +------------+  | |                              |  +-------------------+ |
+                                 |---->  |  | +------------+  | | ------------|--------------> |  |         vm        | |
+                                 |       |  | |     nlb    |  | |             |                |  +-------------------+ |
+                                 |       |  | +------------+  | |             |--------------> |                        |
+                                 |       |  +-----------------+ |             |                +------------------------+
+    +---------------+            |       |            vm        |             |
+    |  +--------+   |            |       +----------------------+             |
+    |  |   vm   |   | -----------|                                            |
+    |  +--------+   |            |                                            |
+    +---------------+            |       +----------------------+             |
+                                 |       |  +-----------------+ |             |
+                                 |       |  | +------------+  | |             |                 +------------------------+
+                                 |       |  | |     nlb    |  | |             |-------------->  |                        |
+                                 |       |  | +------------+  | |             |                 |  +------------------+  |
+                                 |---->  |  | +------------+  | | ------------|-------------->  |  |       vm         |  |
+                                         |  | |     nlb    |  | |                               |  +------------------+  |
+                                         |  | +------------+  | |                               |                        |
+                                         |  +-----------------+ |                               +------------------------+
+                                         |          vm          |
+                                         +----------------------+
+
+-- Import
+
+     > : src dst ; --> : forward ; -> : change
+
+-- Dr Model(src ip penetrate)
+
+--- Same Subnet Data Package Transfer Request
+
+    +---------------------------------------------------------------------------+
+    |client vm :   | cip > nlb vip(fixed ip) && cmac > vmac                     |
+    |              | vmac -nat-> nlb local mac                                  |
+    |              | cip > nlb vip(fixed ip) && cmac > nlb local mac            |
+    +--------------|------------------------------------------------------------+
+    |nlb :         | cmac -nat-> nlb local mac                                  |
+    |              | nlb local mac -nat-> real server mac                       |
+    |              | cip > nlb vip(fixed ip) && nlb local mac > real server mac |
+    +--------------|------------------------------------------------------------+
+    |real server : | nlb vip(fixed ip) -nat-> real server ip                    |
+    |              | send protocol stack                                        |
+    +---------------------------------------------------------------------------+
+--- Same Subnet Data Package Transfer Replay
+
+    +---------------------------------------------------------------+
+    |real server : | cip -arp-> cmac                                |
+    |              | real server ip > cip && real server mac > cmac |
+    +--------------|------------------------------------------------+
+    |client vm :   | send protocol stack                            |
+    +---------------------------------------------------------------+
+
+--- Different Subnet Data Package Transfer Request
+
+    +----------------------------------------------------------------------------------+
+    |client vm :   | cip > nlb vip(fixed ip) && cmac -> client subnet gateway mac      |
+    |              | cmac -nat-> nlb subnet gateway mac                                |
+    |              | client subnet gateway mac -nat-> nlb local mac                    |
+    |              | cip > nlb vip(fixed ip) && nlb subnet gateway mac > nlb local mac |
+    +--------------|-------------------------------------------------------------------+
+    |nlb :         | nlb local mac -nat-> real server mac                              |
+    |              | nlb subnet gateway mac -nat-> nlb local mac                       |
+    |              | cip > nlb vip(fixed ip) &&  nlb local mac > real sercer mac       |
+    +--------------|-------------------------------------------------------------------+
+    |real server : | nlb vip(fixed ip) -nat-> real server ip                           |
+    |              | send protocol stack                                               |
+    +----------------------------------------------------------------------------------+
+--- Different Subnet Data Package Transfer Replay
+
+    +----------------------------------------------------------------------------------+
+    |real server : | real server ip > cip && real server mac > real server gateway mac |
+    |              | real server mac -nat-> client vm gateway mac                      |
+    |              | real server gateway mac -nat-> cmac                               |
+    |              | real server ip > cip && client vm gateway mac > cmac              |
+    +--------------|-------------------------------------------------------------------+
+    |client vm :   | send protocol stack                                               |
+    +----------------------------------------------------------------------------------+
+-- FullNat Model
+
+--- Data Package Transfer
+
+

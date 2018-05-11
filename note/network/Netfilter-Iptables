@@ -114,7 +114,6 @@ Netfilter/IPTables
     自定义Chain：
     用户自定义的chain中的rule和预定义chain里的rule没有区别，不过由于自定义的chain没有和netfilter里面的钩子进行绑定，所以它不会自动触发，只能从其它chain的rule中跳转过来。
 
-
 - IPTables中的规则（Rules）
 
     rule存放在特定表的特定chain上，每条rule包含下面两部分信息：

@@ -1,0 +1,9 @@
+Connect-Type
+
+- HTTP连接
+
+- RPC连接
+
+- SOCKET连接
+
+- TCP连接
