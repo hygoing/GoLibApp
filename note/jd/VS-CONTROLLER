@@ -1,0 +1,129 @@
+
+
+ +--------------+
+ |      vr      |
+ |				|
+ +------|-------+
+ 		|
+ 		|tunnel
+ +------|-------+ tunnel+-----------+
+ |   compute    |-------| compute   |
+ |				|		| 			|
+ +--------------+		+-----------+
+
+
+
+
+router
+--flowGenerator.UpdateRouterCache
+	--flowGenerator.updateRouter
+		--flowGenerator.deleteTunnelCache
+			-- ovscommand : ovs-vsctl del-port
+		--flowGenerator.updateTunnelCache
+			-- src_table:FLOW_TABLE_CLASSIFIER,dst_table:FLOW_TABLE_L3LOOKUP; match:inport;
+			-- ovscommand : ovs-vsctl --may-exist add-port %s %s -- set interface %s type=vxlan options:remote_ip=%s options:key=flow
+			-- src_table:FLOW_TABLE_OUTPUT,dst_table:OUTPUT tunnel ofport; match:reg7(tunnel ofport);
+		--pipeline.UpdateRouter
+			-- [group]{group_id=nlb_pool.group_id,slect,hash=nlb_pool}[bucket for nlb_pool.targets]{action:set_metadata=nlb_pool.target.metadata,set_dst_mac=nlb_pool.target.mac,resubmit=FLOW_TABLE_L2LOOKUP}
+			-- [group]{group_id=router.vni,select}[bucket for n.EgressRouters]{action:output=tunnel ofport}
+	--flowGenerator.deleteSubnet
+	    --pipeline.DeleteSubnet
+	        -- unuse
+    --flowGenerator.updateSubnet
+        --pipeline.UpdateSubent
+            -- [flowmod]{table=FLOW_TABLE_ARPRESP,priority=low}[match]{mac_proto=ETH_PROTO_ARP,metadata=subnet.metadata,arp_dst_ip=subnet.gateway,arp_op=ARP_OP_REQ}[instruction]{apply_action:move=src_mac->dst_mac,move=arp_src_mac->arp_dst_mac,move=arp_src_ip->arp_dst_ip,set_src_mac=subnet.gwmac,set_arp_src_mac=subnet.gwmac,set_arp_scr_ip=subnet.gwip,set_arp_op=ARP_OP_REPLY,output=inport}
+            -- [flowmod]{table=FLOW_TABLE_L2LOOKUP,priority=low}[match]{metadata=subnet.metadata,dst_mac=subnet.gwmac}[instruction]{goto_table:FLOW_TABLE_L3INPUT}
+            -- [flowmod]{table=FLOW_TABLE_L2LOOKUP,priority=low}[match]{metadata=subnet.metadata,dst_mac=flow.mac}[instruction]{goto_table:FLOW_TABLE_OUTPUT;apply_action:set_tunnel_id=subnet.vni,set_reg7=flow.remote.ofport}
+            -- [flowmod]{table=FLOW_TABLE_L3INPUT,priority=low}[match]{metadata=subnet.metadata,mac_proto=ETH_PROTO_IPV4,dst_ip=subnet.gwip}[instruction]{goto_table:FLOW_TABLE_L3LOCAL}
+            -- [flowmod]{table=FLOW_TABLE_L3INPUT,priority=low}[match]{metadata=subnet.metadata,mac_proto=ETH_PROTO_IPV6,dst_ipv6=subnet.gwipv6}[instruction]{goto_table:FLOW_TABLE_L3LOCAL}
+            -- [flowmod]{table=FLOW_TABLE_IPV6_ND,priority=low}[match]{metadata=subnet.metadata,mac_proto=ETH_PROTO_IPV6,ip_proto=IP_PROTO_ICMP6,icmpv6_type=ICMP6_TYPE_NS,ipv6_nd_target=subnet.gwipv6}[instruction]{apply_action:set_dst_mac=subnet.gwmac,resubmit=FLOW_TABLE_OUTPUT}
+            -- [flowmod]{table=FLOW_TABLE_IPV6_ND,priority=low}[match]{metadata=subnet.metadata,mac_proto=ETH_PROTO_IPV6,ip_proto=IP_PROTO_ICMP6,icmpv6_type=ICMP6_TYPE_NS,ipv6_nd_target=flowv6.fixip}[instruction]{goto_table:FLOW_TABLE_OUTPUT;apply_action:set_reg7=flowv6.remote.ofport,set_tunnel_id=subnet.vni}
+            -- [flowmod]{table=FLOW_TABLE_OUTPUT,priority=low}[match]{metadata=subnet.metadata,dst_mac=subent.gwmac}[instruction]{apply_action:set_tunnel_id=subnet.vni,output=group(subent.vni)}
+            -- [flowmod]{table=FLOW_TABLE_FLOWS,priority=low}[match]{reg5=subnet.vni,mac_proto=ETH_PROTO_IPV4,dst_ip=flow.fixip}[instruction]{goto_table:FLOW_TABLE_RTEND;write_metadata:subnet.metadata;apply_action:set_dst_mac=flow.mac,set_src_mac=subnet.gwmac,is_dec_ip_ttl=true}
+            -- [flowmod]{table=FLOW_TABLE_FLOWS,priority=low}[match]{reg5=subnet.vni,mac_proto=ETH_PROTO_IPV6,dst_ipv6=flow6.fixip}[instruction]{goto_table:FLOW_TABLE_RTEND;write_medata:subnet.metadata;apply_action:set_dst_mac=flow6.mac,set_src_mac=subnet.gwmac,is_dec_ip_ttl=true}
+            -- [flowmod]{table=FLOW_TABLE_IPV6_ND,priority=low}[match]{metadata=subnet.metadata,mac_proto=ETH_PROTO_IPV6,ip_proto=IP_PROTO_ICMP6,icmpv6_type=ICMP6_TYPE_RS,dst_ipv6=IPV6_MULTICAST_ALL_ROUTERS(FF02::2)}[instruction]{apply_action:output=controller}
+    --flowGenerator.deleteAcl
+        --pipeline.DeleteAcl
+            -- unuse
+    --flowGenerator.updateAcl
+        --pipeline.UpdateAcl
+            -- [flowmod]{table=FLOW_TABLE_INGRESSACL,priority=0xffff-acl.rule.priority}[match]{acl.rule}[instruction]{apply_action:resubmit=FLOW_TABLE_DISPATCHER}
+            -- [flowmod]{table=FLOW_TABLE_EGRESSACL,priority=0xffff-acl.rule.priority}[match]{acl.rule}[instruction]{apply_action:resubmit=FLOW_TABLE_FLOWS}
+    --flowGenerator.deleteRouteTable
+        --pipeline.DeleteRouteTable
+            -- unuse
+    --flowGenerator.updateRouteTable
+        --pipeline.UpdateRouteTable
+            -- user route_table_rule dont offload
+    --flowGenerator.deleteBnlb
+        --pipeline.DeleteBnlb
+            -- unuse
+    --flowGenerator.updateBnlb
+        --pipeline.UpdateBnlb
+            -- [flowmod]{table=FLOW_TABLE_L2LOOKUP,priority=normal}[match]{metadata=bnlb.metadata,dst_mac=bnlb.mac,mac_proto=ETH_PROTO_IPV4,dst_ip=bnlb.ip}[instruction]{apply_action:resubmit=FLOW_TABLE_BNLB}
+            -- [flowmod]{table=FLOW_TABLE_L3INPUT,priority=low}[match]{reg5=bnlb.vni,mac_proto=ETH_PROTO_IPV4,ip_proto=IP_PROTO_ICMP,dst_ip=bnlb.ip}[instruction]{apply_action:resubmit=FLOW_TABLE_PINGRESP}
+            -- [flowmod]{table=FLOW_TABLE_IPV6_ND,priority=low}[match]{metadata=bnlb.metadata,mac_proto=bnlb.ETH_PROTO_IPV6,ip_proto=IP_PROTO_ICMP6,icmpv6_type=ICMP6_TYPE_NS,ipv6_nd_target=bnlb.ipv6}[instruction]{apply_action:set_dst_mac=bnlb.gwmac,resubmit=FLOW_TABLE_OUTPUT}
+            -- [flowmod]{table=FLOW_TABLE_BNLB,priority=low}[match]{metadata=bnlb.metadata,mac_proto=ETH_PROTO_IPV4,ip_proto=IP_PROTO_ICMP,dst_ip=bnlb.ip}[instruction]{goto_table:FLOW_TABLE_PINGRESP}
+            -- [flowmod]{table=FLOW_TABLE_BNLB,priority=low}[match]{metadata=bnlb.metadata,dst_ip=bnlb.ip,mac_proto=ETH_PROTO_IPV4,ip_proto=bnlb.rule.protocol,dst_tcp_port=bnlb.rule.port}[instruction]{apply_action:output=group(bnlb.rule.group_id)}
+            -- [flowmod]{table=FLOW_TABLE_BNLB,priority=low}[match]{metadata=bnlb.metadata,dst_ip=bnlb.ip,mac_proto=ETH_PROTO_IPV4,ip_proto=bnlb.rule.protocol}[instruction]{apply_action:output=group(bnlb.rule.group_id)}
+            -- [flowmod]{table=FLOW_TABLE_FLOWS,priority=low}[match]{reg5=bnlb.vni,mac_proto=ETH_PROTO_IPV4,dst_ip=bnlb.ip}[instruction]{goto_table=FLOW_TABLE_RTEND;write_metadata=bnlb.metadata;apply_action:set_dst_mac=bnlb.mac,set_src_mac=bnlb.bnlb.gwmac,is_dec_ip_ttl=true}
+            -- [flowmod]{table=FLOW_TABLE_FLOWS,priority=normal}[match]{reg5=bnlb.vni,mac_proto=ETH_PROTO_IPV4,reg3=bnlb.ip,reg11=NLBNAT_FWD}[instruction]{write_metadata:bnlb.metadata;goto_table:FLOW_TABLE_RTEND;set_src_mac=bnlb.mac,set_dst_mac=bnlb.gwmac,set_reg11=NLBNAT_FWD_END}
+
+--DeleteRouterCache
+    --flowGenerator.deleteSubnet
+        --pipeline.DeleteSubnet
+            -- unuse
+    --flowGenerator.deleteAcl
+        --pipeline.DeleteAcl
+            -- unuse
+    --flowGenerator.deleteRouteTable
+        --pipeline.DeleteRouteTable
+            -- unuse
+    --flowGenerator.deleteBnlb
+        --pipeline.DeleteBnlb
+            -- unuse
+    --flowGenerator.deleteRouter
+        --pipeline.DeleteRouter
+            -- unuse
+        --flowGenerator.deleteTunnelCache
+            --flowGenerator.deleteTunnel
+                -- ovscommand : ovs-vsctl del-port
+
+subnet
+--flowGenerator.UpdateSubnetCache
+    --flowGenerator.deleteDhcpPort
+        --pipeline.DeleteDhcpPort
+            -- [map]delete dhcpResp.info[dhcpPort.subnetMetadata]
+            -- [map]delete routerAdvertisement.dhcpPorts[dhcpPort.subnetMetadata]
+    --flowGenerator.updateDhcpPort
+        --pipeline.UpdateDhcpPort
+            -- [flowmod]{table=FLOW_TABLE_ARPRESP,priority=low}[match]{mac_proto=ETH_PROTO_ARP,metadata=dhcpPort.subnetMetadata,dst_arp_ip=dhcpPort.flow.ip,arp_op=ARP_OP_REQ}[instruction]{apply_action:move=src_mac->dst_mac,move=src_arp_mac->dst_arp_mac,move=src_arp_ip->dst_arp_ip,set_src_mac=dhcpPort.flow.mac,set_src_arp_mac=dhcpPort.flow.ip,set_arp_op=ARP_OP_REPLY,output=inport}
+            -- [flowmod]{table=FLOW_TABLE_DHCPRESP,priority=low}[match]{metadata=dhcpPort.subnetMetadata,mac_proto=PROTO_TYPE_IPv4,ip_proto=IP_PROTO_UDP,src_udp_port=UDP_PORT_DHCP_CLIENT,dst_udp_port=UDP_PORT_DHCP_SERVER,dst_mac="ff:ff:ff:ff:ff:ff"}[instruction]{apply_action:output=controller}
+            -- [flowmod]{table=FLOW_TABLE_DHCPRESP,priority=low}[match]{metadata=dhcpPort.subnetMetadata,mac_proto=PROTO_TYPE_IPv6,ip_proto=IP_PROTO_UDP,src_udp_port=UDP_PORT_DHCP_CLIENT,dst_udp_port=UDP_PORT_DHCP_SERVER,dst_mac="33:33:00:01:00:02"}[instruction]{apply_action:output=controller}
+            -- [flowmod]{table=FLOW_TABLE_DHCPRESP,priority=low}[match]{metadata=dhcpPort.subnetMetadata,mac_proto=PROTO_TYPE_IPv4,ip_proto=IP_PROTO_UDP,src_udp_port=UDP_PORT_DHCP_CLIENT,dst_udp_port=UDP_PORT_DHCP_SERVER,dst_mac=dhcpPort.flow.mac}[instruction]{apply_action:output=controller}
+            -- [flowmod]{table=FLOW_TABLE_DHCPRESP,priority=low}[match]{metadata=dhcpPort.subnetMetadata,mac_proto=PROTO_TYPE_IPv6,ip_proto=IP_PROTO_UDP,src_udp_port=UDP_PORT_DHCP_CLIENT,dst_udp_port=UDP_PORT_DHCP_SERVER,dst_mac=dhcpPort.flowv6.mac}[instruction]{apply_action:output=controller}
+            -- [map]add routerAdvertisement[dhcoPort.subnetMetadata] = dhcoPort
+    --flowGenerator.deleteLocalPort
+        --pipeline.DeleteLocalPort
+            -- [map]delete arpResp.localPorts[localPort.id]
+            -- [map]delete metadata.metadataProxy[localPort.id]
+            -- ovs command : ovs-vsctl del-port localPort.id
+            -- [map]delete routerAdvertisement.localPorts[localPort.id]
+    --flowGenerator.deleteRemotePort
+        --pipeline.DeleteRemotePort
+            -- [map]delete arpResp.remotePorts[remotePort.id]
+    --flowGenerator.updateLocalPort
+        --pipeline.UpdateLocalPort
+            -- [flowmod]{table=FLOW_TABLE_ARPRESP,priority=low}[match]{mac_proto=ETH_PROTO_ARP,metadata=localPort.subnetMetadata,dst_arp_ip=localPort.flow.fixip,arp_op=ARP_OP_REQ}[instruction]{apply_action:move=src_mac->dst_mac,move=src_arp_mac->dst_arp_mac,move=src_arp_ip->dst_arp_ip,set_src_mac=localPort.flow.mac,set_src_arp_mac=localPort.flow.mac,set_srt_arp_ip=localPort.flow.ip,set_arp_op=ARP_OP_REPLY,output=inport}
+            -- [pkgout]{type=GratuiousArp}[Inport]{port=0xfeff}[Data]{Ethernet:hw_dst="ff:ff:ff:ff:ff:ff",hw_src=localPort.flow.mac,proto_type=PROTO_TYPE_ARP(0x0806);ArpData:hw_src=localPort.flow.mac,ip_src=localPort.flow.fixip,hw_dst="ff:ff:ff:ff:ff:ff",ip_dst=localPort.flow.fixip}[Action]{output=localPort.ofPort}
+            -- [flowmod]{table=FLOW_TABLE_CLASSIFIER,priority=normal}[match]{in_port=localPort.ofPort,src_mac=localPort.vni:00:00:00/ff:ff:ff:00:00:00}[instruction]{write_metadata=localPort.subnetMetadata;goto_table=FLOW_TABLE_PORTSEC}
+            -- [flowmod]{table=FLOW_TABLE_CLASSIFIER,priority=low}[match]{inport=localPort.ofPort}[instruction]{goto_table=FLOW_TABLE_L3LOOKUP,move=src_mac->tunnel_id(start:25,length:24),}
+
+
+
+
+
+
+
+
+

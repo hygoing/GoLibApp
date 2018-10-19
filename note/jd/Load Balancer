@@ -68,6 +68,7 @@ Load Balancer
     vr :
 
 -- FullNat Model
+    todo
 
 --- Data Package Transfer
 
@@ -98,50 +99,84 @@ Load Balancer
                                          |          vm          |
                                          +----------------------+
 
--- Import
-
-     > : src dst ; --> : forward ; -> : change
-
 -- Dr Model(src ip penetrate)
 
---- Same Subnet Data Package Transfer Request
+--- Client, Nlb, Target On Same Compute, Client, Nlb In Same Subnet, Target In Other Subnet
 
-    +---------------------------------------------------------------------------+
-    |client vm :   | cip > nlb vip(fixed ip) && cmac > vmac                     |
-    |              | vmac -nat-> nlb local mac                                  |
-    |              | cip > nlb vip(fixed ip) && cmac > nlb local mac            |
-    +--------------|------------------------------------------------------------+
-    |nlb :         | cmac -nat-> nlb local mac                                  |
-    |              | nlb local mac -nat-> real server mac                       |
-    |              | cip > nlb vip(fixed ip) && nlb local mac > real server mac |
-    +--------------|------------------------------------------------------------+
-    |real server : | nlb vip(fixed ip) -nat-> real server ip                    |
-    |              | send protocol stack                                        |
-    +---------------------------------------------------------------------------+
---- Same Subnet Data Package Transfer Replay
+--- Client, Nlb, Target All Same Subnet Data Package Transfer Request And Reply
+    Request:
+    +---------------------------------------------------------------------------+----------------------------------------------------------+
+    |client vm :   | client ip > nlb vip                                        |                                                          |
+    |              | client mac > nlb vmac                                      |                                                          |
+    |              | client port > nlb vport(listener port)                     |                                                          |
+    +--------------|------------------------------------------------------------+----------------------------------------------------------+
+    |client ovs :  | client ip > nlb vip                                        | via flow table hash nlb vmac to nlb local mac            |
+    |              | client mac > nlb local mac (nlb vmac -hash-> nlb local mac)| because nlb is high availability, have more than 2 nodes |
+    |              | client port > nlb vport(listener port)                     | so need hash nlb vmac to nlb local mac                   |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    | hyper node   | client ip > nlb vip                                        | client mac high 3 byte revised vni, because diff vpc can |
+    | ovs :        | client mac >  nlb local mac (cmac high 3 byte vni)         | be address Overloading, data plan need vni hash nlb local|
+    |              | client port > nlb vport (listener port)                    | mac to target mac                                        |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    | hyper node : | client ip > nlb vip                                        | data plan via vni and backend algorithm hash nlb local   |
+    |              | client mac > real server mac (cmac high 3 byte vni)        | mac to target mac, because nlb can mount multi target    |
+    |              | client port > nlb vport(listener port)                     |                                                          |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    | hyper node : | client ip > nlb vip                                        | client replace client mac high 3 byte vni, because real  |
+    | ovs          | client mac > real server mac                               | server reply package need real client mac                |
+    |              | client port > nlb vport(listener port)                     |                                                          |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    | real server :| client ip > real server ip                                 | real server not promiscuous mode, need replace real      |
+    | ovs          | client mac > real server mac                               | server ip to vip and replace nlb vport to real server    |
+    |              | client port > real server port                             | port                                                     |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    |real server : | finish                                                     |                                                          |
+    +---------------------------------------------------------------------------+----------------------------------------------------------+
+    Reply:
+    +---------------------------------------------------------------+-----------------------------------------+
+    |real server : | real server mac > client mac                   |                                         |
+    |              | real server ip > client ip                     |                                         |
+    |              | real server prot > client port                 |                                         |
+    +--------------|------------------------------------------------+-----------------------------------------+
+    | real server :| real server mac > client mac                   | package come and back need symmetrical  |
+    | ovs          | real server vip > client ip                    |                                         |
+    |              | nlb vport(listener port) > client port         |                                         |
+    +---------------------------------------------------------------+-----------------------------------------+
+    | client vm :  | finish                                         |                                         |
+    +---------------------------------------------------------------+-----------------------------------------+
+    Explain:
+    package come do dnat, because need discriminate package be from client or nlb
+    package back do snat, because need package symmetrical
 
-    +---------------------------------------------------------------+
-    |real server : | cip -arp-> cmac                                |
-    |              | real server ip > cip && real server mac > cmac |
-    +--------------|------------------------------------------------+
-    |client vm :   | send protocol stack                            |
-    +---------------------------------------------------------------+
-
---- Different Subnet Data Package Transfer Request
-
-    +----------------------------------------------------------------------------------+
-    |client vm :   | cip > nlb vip(fixed ip) && cmac -> client subnet gateway mac      |
-    |              | cmac -nat-> nlb subnet gateway mac                                |
-    |              | client subnet gateway mac -nat-> nlb local mac                    |
-    |              | cip > nlb vip(fixed ip) && nlb subnet gateway mac > nlb local mac |
-    +--------------|-------------------------------------------------------------------+
-    |nlb :         | nlb local mac -nat-> real server mac                              |
-    |              | nlb subnet gateway mac -nat-> nlb local mac                       |
-    |              | cip > nlb vip(fixed ip) &&  nlb local mac > real sercer mac       |
-    +--------------|-------------------------------------------------------------------+
-    |real server : | nlb vip(fixed ip) -nat-> real server ip                           |
-    |              | send protocol stack                                               |
-    +----------------------------------------------------------------------------------+
+--- Client, Nlb, Target All Different Subnet Data Package Transfer Request
+    Request
+    +---------------------------------------------------------------------------+----------------------------------------------------------+
+    |client vm :   | client ip > nlb vip                                        |                                                          |
+    |              | client mac > client gw mac                                 |                                                          |
+    |              | client port > nlb vport(listener port)                     |                                                          |
+    +--------------|------------------------------------------------------------+----------------------------------------------------------+
+    |client ovs :  | client ip > nlb vip                                        | via flow table replaced client gw mac with nlb gw mac,   |
+    |              | client mac > nlb local mac                                 | then hash nlb gw mac to nlb local mac                    |
+    |              | client port > nlb vport(listener port)                     |                                                          |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    | hyper node   | client ip > nlb vip                                        | client mac high 3 byte revised vni, because diff vpc can |
+    | ovs :        | client mac > nlb local mac (cmac high 3 byte vni)          | be address Overloading, data plan need vni hash nlb local|
+    |              | client port > nlb vport (listener port)                    | mac to target mac                                        |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    | hyper node : | client ip > nlb vip                                        | data plan via vni and backend algorithm hash nlb local   |
+    |              | client mac > real server mac (cmac high 3 byte vni)        | mac to target mac, because nlb can mount multi target    |
+    |              | client port > nlb vport(listener port)                     |                                                          |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    | hyper node : | client ip > nlb vip                                        | client replace client mac high 3 byte vni, because real  |
+    | ovs          | client mac > real server mac                               | server reply package need real client mac                |
+    |              | client port > nlb vport(listener port)                     |                                                          |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    | real server :| client ip > real server ip                                 | real server not promiscuous mode, need replace real      |
+    | ovs          | client mac > real server mac                               | server ip to vip and replace nlb vport to real server    |
+    |              | client port > real server port                             | port                                                     |
+    +--------------|------------------------------------------------------------|----------------------------------------------------------+
+    |real server : | finish                                                     |                                                          |
+    +---------------------------------------------------------------------------+----------------------------------------------------------+
 --- Different Subnet Data Package Transfer Replay
 
     +----------------------------------------------------------------------------------+
@@ -153,6 +188,7 @@ Load Balancer
     |client vm :   | send protocol stack                                               |
     +----------------------------------------------------------------------------------+
 -- FullNat Model
+    todo
 
 --- Data Package Transfer
 
