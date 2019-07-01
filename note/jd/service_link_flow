@@ -1,0 +1,151 @@
+Q1:hypervm物理机会拿到所有绑定了该hypervm包含的nlb的vpc信息，updateEndPoint生成部分流表时(除了在hypervm回包时候匹配源mac为endpointmac)，应该判断是否有endpoint所在vpc的vm在物理机上
+
+/**
+    client and endpoint in same subnet
+**/
+
+/* client -> hypervm in client ovs*/
+[classifier] [updateLocalPort]
+[flowmod]{table=FLOW_TABLE_CLASSIFIER,priority=low}[match]{in_port=client.ofport}[instruction]{goto_table=FLOW_TABLE_PORTSEC;write_metadata=client.metadata;apply_action:set_reg5=client.vni,set_reg6=client.ofport}
+
+[port_security] [updateLocalPort]
+[flowmod]{table=FLOW_TABLE_PORTSEC,priority=low}[match]{in_port=client.ofport,mac_proto=ipv4,src_mac=client.mac,src_ip=client.ip}[instruction]{goto_table=FLOW_TABLE_EGRESSCT}
+
+[egress_security]
+[flowmod]{table=FLOW_TABLE_EGRESSCT,priority=high}[match]{mac_proto=ipv4,ip_proto=tcp/udp}[instruction]{apply_action:connection_track=(table_id=FLOW_TABLE_EGRESSCTSG,field=reg6(s=1,e=16))} //egress client sg no change
+
+[egress_security_rule]
+[flowmod]{table=FLOW_TABLE_EGRESSCTSG}[match]{security_rule}[instruction]{goto_table=FLOW_TABLE_DISPATCHER}
+
+[dispatcher] [setup]
+[flowmod]{table=FLOW_TABLE_DISPATCHER,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_NLBNAT}
+
+[nlb_nat] [setup]
+[flowmod]{table=FLOW_TABLE_NLBNAT,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_L2LOOKUP}
+
+[l2_lookup] [updateEndPoint]
+[flowmod]{table=FLOW_TABLE_L2LOOKUP,priority=low}[match]{metadata=endpoint.metadata,dst_mac=endpoint.mac}[instruction]{goto_table=FLOW_TABLE_INGRESSCT;apply_action:set_reg7=65536}
+
+[ingress_security] [updatEndPoint]
+[flowmod]{table=FLOW_TABLE_INGRESSCT,priority=highest}[match]{reg7=65536,reg5=endpoint.vni,dst_ip=endpoint.vip}[instruction]{goto_table=FLOW_TABLE_INGRESSCTSG} // client ingress endPoint sg no need ct
+
+[ingress_security_rule] [updateEndPoint]
+[flowmod]{table=FLOW_TABLE_INGRESSCTSG,priority=normal}[match]{mac_proto=ipv4,reg5=endpoint.vni,reg7=65535,dst_ip=endpoint.vip,src_ip=rule.ip,ip_proto=tcp,dst_port=rule.portStart,dst_port_mast=rule.portMask}[instruction]{goto_table=FLOW_TABLE_OUTPUT}
+[flowmod]{table=FLOW_TABLE_INGRESSCTSG,priority=normal}[match]{mac_proto=ipv4,reg5=endpoint.vni,reg7=65535,dst_ip=endpoint.vip,src_ip=rule.ip,ip_proto=udp,dst_port=rule.portStart,dst_port_mast=rule.portMask}[instruction]{goto_table=FLOW_TABLE_OUTPUT}
+[flowmod]{table=FLOW_TABLE_INGRESSCTSG,priority=normal}[match]{mac_proto=ipv4,reg5=endpoint.vni,reg7=65535,dst_ip=endpoint.vip,src_ip=rule.ip,ip_proto=icmp}[instruction]{goto_table=FLOW_TABLE_OUTPUT}
+
+[output] [updateEndPoint]
+[flowmod]{table=FLOW_TABLE_OUTPUT,priority=low}[match]{reg7=65536,metadata=endpoint.metadata,dst_mac=endpoint.vmac}[instruction]{goto_table=FLOW_TABLE_BNLB} // client ingress end_point sg, need hash to end_point instance
+
+[bnlb] [updateBnlb]
+[flowmod]{table=FLOW_TABLE_BNLB,priority=low}[match]{mac_proto=ipv4,reg5=endpoint.vni,dst_ip=endpoint.vip,ip_proto=icmp}[instruction]{goto_table=FLOW_TABLE_PINGRESP}
+[flowmod]{table=FLOW_TABLE_BNLB,priority=low}[match]{mac_proto=ipv4,reg5=endpoint.vni,dst_ip=endpoint.vip,ip_proto=rule.protocol,dst_port=rule.port}[instruction]{group=rule.group_id;apply_action:move=endpoint.vni->src_mac,set_reg5=bnlb.vni}
+
+[bnlb] [updateRouter]
+[group]{groupId=bnlb_pool.groupId,select}[hash]{key=src_ip,dst_ip}[bucket]{bucketId=genBucketId(bnlb_pool.target.mac)}[action]{set_dst_mac=bnlb_pool.target.mac;set_metadata=bnlb_pool.target.metadata;resubmit=FLOW_TABLE_DISPATCHER}
+
+[dispatcher] [setup]
+[flowmod]{table=FLOW_TABLE_DISPATCHER,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_NLBNAT}
+
+[nlb_nat] [setup]
+[flowmod]{table=FLOW_TABLE_NLBNAT,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_L2LOOKUP}
+
+[l2_lookup] [updateSubnet]
+[flowmod]{table=FLOW_TABLE_L2LOOKUP,priority=low}[match]{metadata=nlb_ins.metadata,dst_mac=nlb_ins.mac}[instruction]{goto_table=FLOW_TABLE_OUTPUT;apply_action:set_tunnel=nlb_ins.vni,set_reg7=nlb_ins.vx_ofport}
+
+[output] [updateTunnel]
+[flowmod]{table=FLOW_TABLE_OUTPUT,priority=low}[match]{reg7=nlb_ins.vx_ofport}[instruction]{output=nlb_ins.vx_ofport}
+
+/* client -> hypervm in hypervm ovs */
+[classifier] [updateTunnel]
+[flowmod]{table=FLOW_TABLE_CLASSIFIER,priority=low}[match]{in_port=nlb_ins.vx_ofport}[instruction]{goto_table=FLOW_TABLE=L3LOOKUP}
+
+[l3_lookup] [updateLocalPort]
+[flowmod]{table=FLOW_TABLE_L3LOOKUP,priority=lowest}[match]{mac_proto=ipv4,tunnel_id=nlb_ins.vni,dst_mac=nlb_ins.mac}[instruction]{goto_table=FLOW_TABLE_DISPATCHER;apply_action:set_reg5=nlb_ins.vni,set_metadata=nlb_ins.metadata}
+
+[dispatcher] [setup]
+[flowmod]{table=FLOW_TABLE_DISPATCHER,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_NLBNAT}
+
+[nlb_nat] [setup]
+[flowmod]{table=FLOW_TABLE_NLBNAT,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_L2LOOKUP}
+
+[l2_lookup] [updateLocalPort]
+[flowmod]{table=FLOW_TABLE_L2LOOKUP,priority=low}[match]{metadata=nlb_ins.metadata,dst_mac=nlb_ins.mac}[instruction]{goto_table=FLOW_TABLE_OUTPUT;apply_action:set_reg7=nlb_ins.ofport,set_tunnel_id=nlb_ins.vni}
+
+[output] [updateLocalPort]
+原来的流表项增加匹配条件，src_mac高三位等于"fa:16:3e"
+[flowmod]{table=FLOW_TABLE_OUTPUT,priority=low}[match]{reg7=nlb_ins.ofport}[instruction]{output=nlb_ins.ofport}
+
+/* hypervm -> client in hypervm ovs */
+[classifier] [updateLocalPort]
+[flowmod]{table=FLOW_TABLE_CLASSIFIER,priority=low}[match]{in_port=nlb_ins.ofport}[instruction]{goto_table=FLOW_TABLE_L3LOOKUP;apply_action:move=src高三位client vni->tunnel_id,load="fa:16:3e"->src_mac,load="fa:16:3e"->dst_mac,set_reg6=nlb_ins.ofport}
+
+[l3_lookup] [updateEndPoint]
+[flowmod]{table=FLOW_TABLE_L3LOOKUP,priority=low}[match]{tunnel_id=endpoint.vni,src_mac=endpoint.mac}[instruction]{goto_table=FLOW_TABLE_DISPATCHER;apply_action:set_reg5=endpoint.vni,set_metadata=endpoint.metadata}
+
+[dispatcher] [setup]
+[flowmod]{table=FLOW_TABLE_DISPATCHER,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_NLBNAT}
+
+[nlb_nat] [setup]
+[flowmod]{table=FLOW_TABLE_NLBNAT,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_L2LOOKUP}
+
+[l2_lookup] [updateSubnet]
+[flowmod]{table=FLOW_TABLE_L2LOOKUP,priority=low}[match]{metadata=client.metadata,dst_mac=client.mac}[instruction]{goto_table=FLOW_TABLE_OUTPUT;apply_action:set_tuunel_id=client.vni,set_reg7=client.vx_ofport}
+
+[output] [updateTunnel]
+[flowmod]{table=FLOW_TABLE_OUTPUT,priority=low}[match]{reg7=client.vx_ofport}[instruction]{output=client.vx_ofport}
+
+/* hypervm -> client in client ovs */
+[classifier] [updateTunnel]
+[flowmod]{table=classifier,priority=low}[match]{in_port=clinet.vx_ofport}[instruction]{goto_table=FLOW_TABLE_L3LOOKUP}
+
+[l2_lookup] [updateLocalPort]
+[flowmod]{table=classifier,priority=low}[match]{mac_proto=ipv4,tunnel_id=client.vni,dst_mac=client.mac}[instruction]{goto_table=FLOW_TABLE_DISPATCHER;apply_action:set_reg5=client.vni,set_metadata=client.metadata}
+
+[dispatcher] [setup]
+[flowmod]{table=FLOW_TABLE_DISPATCHER,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_NLBNAT}
+
+[nlb_nat] [setup]
+[flowmod]{table=FLOW_TABLE_NLBNAT,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_L2LOOKUP}
+
+[l2_lookup] [updateLocalPort]
+[flowmod]{table=FLOW_TABLE_INGRESSCT,priority=low}[match]{metadata=client.metadata,dst_mac=client.metadata}[instruction]{goto_table=FLOW_TABLE_INGRESSCT;apply_action:set_reg7=client.ofport,tunnel_id=client.vni}
+
+[ingress_security]
+no change
+
+[output] [updateLocalPort]
+[flowmod]{table=FLOW_TABLE_OUTPUT,priority=low}[match]{reg7=client.ofport,metadata=client.metadata}[instruction]{output=client.ofport}
+
+
+/**
+    client and endpoint in different subnet
+[flowmod]{table=,priority=}[match]{}[instruction]{goto_table=;}
+**/
+/* client - > hypervm in client ovs */
+[classifier] [updateLocalPort]
+[flowmod]{table=classifier,priority=low}[match]{in_port=client.ofport}[instruction]{goto_table=FLOW_TABLE_PORTSEC;write_metadata=client.metadata;apply_action:set_reg5=client.vni,set_reg6=client.ofport}
+
+[port_security] [updateLocalPort]
+[flowmod]{table=FLOW_TABLE_PORTSEC,priority=low}[match]{in_port=client.ofport,mac_proto=ipv4,src_mac=client.mac,src_ip=client.ip}[instruction]{goto_table=FLOW_TABLE_EGRESSCT}
+
+[egress_security]
+[flowmod]{table=FLOW_TABLE_EGRESSCT,priority=high}[match]{mac_proto=ipv4,ip_proto=tcp/udp}[instruction]{apply_action:connection_track=(table_id=FLOW_TABLE_EGRESSCTSG,field=reg6(s=1,e=16))} //egress client sg no change
+
+[egress_security_rule]
+[flowmod]{table=FLOW_TABLE_EGRESSCTSG}[match]{security_rule}[instruction]{goto_table=FLOW_TABLE_DISPATCHER}
+
+[dispatcher] [setup]
+[flowmod]{table=FLOW_TABLE_DISPATCHER,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_NLBNAT}
+
+[nlb_nat] [setup]
+[flowmod]{table=FLOW_TABLE_NLBNAT,priority=lowest}[match]{}[instruction]{goto_table=FLOW_TABLE_L2LOOKUP}
+
+[l2_lookup] [updateSubnet]
+[flowmod]{table=FLOW_TABLE_L2LOOKUP,priority=low}[match]{metadata=client.metadata,dst_mac=client.mac}[instruction]{goto_table=FLOW_TABLE_L3INPUT}
+
+[l3_input] [updateSubnet]
+[flowmod]{table=FLOW_TABLE_L3INPUT,priority=low}[match]{metadata=client.metadata,mac_proto=ipv4,dst_ip=client.gwmac}[instruction]{goto_table=FLOW_TABLE_L3LOCAL}
+
+[l3_local] [updateL3Local]
+[flowmod]{table=FLOW_TABLE_L3LOCAL,priority=lowest}[match]{mac_proto=ipv4}[instruction]{resubmit=}

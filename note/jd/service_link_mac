@@ -1,0 +1,82 @@
+rouer:
+1.client host -> 拿到所有涉及到vm的vpc信息，并拿到该vpc内endpoint信息
+2.hyper vm -> 拿到所有end ins涉及vpc的router信息
+
+/**
+    client and endpoint in different subnet
+**/
+
+/* client -> target in client ovs */
+[classifier] [updateLocalPort]
+[flowmod]{table=0,priority=low}[match]{in_port=client.ofport}[instruction]{goto_table=5;write_metadata=client.metadata;apply_action:set_reg5=client.vni,set_reg6=client.ofport}
+
+[port_security] [updateLocalPort]
+[flowmod]{table=5,priority=low}[match]{in_port=client.ofport,mac_proto=ipv4,src_mac=client.mac,src_ip=client.ip}[instruction]{goto_table=10}
+
+[egress_security]
+[flowmod]{table=10,priority=high}[match]{mac_proto=ipv4,ip_proto=tcp/udp}[instruction]{apply_action:connection_track=(table_id=15,field=reg6(s=1,e=16))} //egress client sg no change
+
+[egress_security_rule]
+[flowmod]{table=15}[match]{security_rule}[instruction]{goto_table=20}
+
+[dispatcher] [setup]
+[flowmod]{table=20,priority=lowest}[match]{}[instruction]{goto_table=43}
+
+[nlb_nat] [setup]
+[flowmod]{table=43,priority=lowest}[match]{}[instruction]{goto_table=45}
+
+[l2_lookup] [updateSubnet]
+[flowmod]{table=45,priority=low}[match]{metadata=client.subnet.metadata,dst_mac=client.subnet.gwmac}[instruction]{goto_table=70}
+
+[l3_input] [setup]
+[flowmod]{table=70,priority=lowest}[match]{}[instruction]{goto_table=80}
+
+[l3_check] [setup]
+[flowmod]{table=80,priority=low}[match]{}[instruction]{goto_table=90}
+
+[egress_acl] [updateAcl]
+[flowmod]{table=90,priority=acl.rule.priority}[match]{acl.rules}[instruction]{goto_table=100}
+
+[flows] [updateEndPoint]
+[flowmod]{table=100,priority=low}[match]{reg5=endpoint.vni,mac_proto=ipv4,dst_ip=endpoint.vip}[instruction]{goto_table=120;write_metadata=endpoint.metadata;apply_action:set_dst_mac=endpoint.vmac,set_src_mac=endpoint.subnet.gwmac}
+
+[rtend] [setup]
+[flowmod]{table=120,priority=lowest}[match]{}[instruction]{goto_table=130}
+
+[ingress_acl] [updateAcl]
+[flowmod]{table=130,priority=acl.rule.priority}[match]{acl.rules}[instruction]{goto_table=20}
+
+[dispatcher] [setup]
+[flowmod]{table=20,priority=lowest}[match]{}[instruction]{goto_table=43}
+
+[nlb_nat] [setup]
+[flowmod]{table=43,priority=lowest}[match]{}[instruction]{goto_table=45}
+
+[l2_lookup] [updateEndPoint]
+[flowmod]{table=45,priority=low}[match]{metadata=endpoint.metadata,dst_mac=endpoint.vmac}[instruction]{goto_table=50;apply_action:set_reg7=65536}
+
+[ingress_security] [updateEndPoint]
+[flowmod]{table=50,priority=highest}[match]{reg7=65536,reg5=endpoint.vni,mac_proto=ipv4,dst_ip=endpoint.vip}[instruction]{goto_table=55}
+
+[ingress_security_rule] [updateEndPoint]
+[flowmod]{table=55,priority=normal}[match]{mac_proto=ipv4,reg5=endpoint.vni,reg7=65535,dst_ip=endpoint.vip,src_ip=rule.ip,ip_proto=tcp,dst_port=rule.portStart,dst_port_mast=rule.portMask}[instruction]{goto_table=60}
+[flowmod]{table=55,priority=normal}[match]{mac_proto=ipv4,reg5=endpoint.vni,reg7=65535,dst_ip=endpoint.vip,src_ip=rule.ip,ip_proto=udp,dst_port=rule.portStart,dst_port_mast=rule.portMask}[instruction]{goto_table=60}
+[flowmod]{table=55,priority=normal}[match]{mac_proto=ipv4,reg5=endpoint.vni,reg7=65535,dst_ip=endpoint.vip,src_ip=rule.ip,ip_proto=icmp}[instruction]{goto_table=60}
+
+[output] [updateEndPoint]
+[flowmod]{table=60,priority=low}[match]{reg7=65536,metadata=endpoint.metadata,dst_mac=endpoint.vmac}[instruction]{goto_table=47}
+
+[bnlb] [updateEndPoint]
+[flowmod]{table=47,priority=low}[match]{metadata=endpoint.metadata,mac_proto=ipv4,ip_proto=icmp,dst_ip=endpoint.vip}[instruction]{goto_table=26}
+[flowmod]{table=47,priority=low}[match]{metadata=endpoint.metadata,mac_proto=ipv4,ip_proto=tcp,dst_ip=endpoint.vip}[instruction]{apply_action:group=endpoint.groupId}
+[flowmod]{table=47,priority=low}[match]{metadata=endpoint.metadata,mac_proto=ipv4,ip_proto=udp,dst_ip=endpoint.vip}[instruction]{apply_action:group=endpoint.groupId}
+[group]{groupId=endpoint.groupId,select}[hash]{key=src_ip,dst_ip}[bucket]{bucketId=endpoint.ins.mac}[action]{set_dst_mac=endpoint.ins.mac;resubmit=45}
+
+[l2_lookup] [updateSubent]
+[flowmod]{table=45,priority=low}[match]{metadata=endpoint.ins.metadata,dst_mac=endpoint.ins.mac}[instruction]{goto_table=60;apply_action:set_tunnel_id=endpoint.ins.vni,set_reg7=endpoint.ins.vxofport}
+
+[output] [updateTunnel]
+[flowmod]{table=60,priority=low}[match]{reg7=endpoint.ins.vxofport}[instruction]{output=endpoint.ins.vxofport}
+
+/* client -> target in hypervm ovs */
+[flowmod]{table=0,priority=low}[match]{in_port=endpoint.ins.vxofport}[instruction]{goto_table=40}
